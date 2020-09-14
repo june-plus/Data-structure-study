@@ -50,13 +50,13 @@ class Policyholder():
 		self.account_number = self.make_account_number()
 		self.sex = random.choice(["M", "F"])
 		self.dob = make_date(0,0)
-		self.ssn = self.make_ssn()
+		self.ssn, self.ssn_sensored = self.make_ssn()
 		self.allergies = random.choice(["none", "single", "multiple"])
 		self.medical_conditions = random.choice(["none", "single", "multiple"])
 		self.claim_count = 0
 		self.claim_list = []
 
-		self.properties = (self.account_number, self.sex, self.dob, self.ssn, self.allergies, self.medical_conditions)
+		self.properties = (self.account_number, self.sex, self.dob, self.ssn_sensored, self.allergies, self.medical_conditions)
 		#print(self.properties)
 
 	def make_account_number(self):
@@ -73,27 +73,29 @@ class Policyholder():
 	def make_ssn(self):
 		''' 
 		randomly generate a new ssn if it does not exist in global list of ssn using recursion
-		@return: social security number in format ###-##-####
+		@return: tuple of (social security number in format ###-##-####, randomized ssn)
 		'''
 		first = random.randint(100,999)
 		second = random.randint(10,99)
 		third = random.randint(1000,9999)
 		ssn = "{}-{}-{}".format(first, second, third)
+		ssn_sensored = "xxx-xx-{}".format(third)
 		if ssn in SSN_LIST:
 			self.make_ssn()
 		else:
-			return ssn
+			return (ssn, ssn_sensored)
 
 	def make_claim(self):
 		'''
-		make a claim and link to policyholder
+		make a claim and link to policyholder.
+		@return: tuple of (claim number, loss date, loss type, billed amount, covered amount)
 		'''
-		claim_number = self.claim_count
+		claim_number = str(self.claim_count + 1 ).zfill(6)
 		# print(self.claim_list)
 		if claim_number in self.claim_list:
 			self.make_claim()
 		else:
-			lossdate = make_date((self.dob.year, self.dob.month, self.dob.day), VALUATION_DATE.split("-"))
+			lossdate = make_date((self.dob.year + 24, self.dob.month, self.dob.day), VALUATION_DATE.split("-")) #claims made after turning 24 .. for reality aspect
 			losstype = random.choice(["surgery", "medication", "emergency", "hospital"])
 			billed_amt = round(random.uniform(0, 30000),2)
 			covered_amt = round(random.uniform(0, billed_amt),2)
@@ -105,10 +107,13 @@ class Policyholder():
 
 	def __str__(self):
 		return '\nAcct No.: {} \nSex: {} \nDate of Birth: {} \nSSN: {} \nAllergies: {} \
-		\nMedical Conditions: {}\n'.format(self.account_number,self.sex,self.dob,self.ssn,self.allergies,self.medical_conditions)
+		\nMedical Conditions: {}\n'.format(self.account_number,self.sex,self.dob,self.ssn_sensored,self.allergies,self.medical_conditions)
 	
 
 class Claim():
+	'''
+	Claim Object containing claim information
+	'''
 	def __init__(self, lossdate = None , losstype = None, billed_amt=0, covered_amt=0):
 		self.lossdate = lossdate
 		self.losstype = losstype
@@ -119,6 +124,7 @@ class Claim():
 class InsuranceDB():
 	def __init__(self, db_name):
 		self.db_name = '{}.db'.format(db_name)
+		self.metrics = {}
 
 		try:
 			self.conn = sqlite3.connect(self.db_name)
@@ -127,8 +133,16 @@ class InsuranceDB():
 		except:
 			print('database connection error; try again.')
 
-	def make_tables(self):
+	def return_query(self, query):
+		self.cursor.execute(query)
+		rows = self.cursor.fetchall()
+		return rows
 
+
+	def make_tables(self):
+		'''
+		Drops three tables if already exists, then creates Accounts, Claims, and SSN_LIST tables in DB
+		'''
 		query = '''
 		DROP TABLE IF EXISTS 'Accounts';
 		'''
@@ -138,6 +152,13 @@ class InsuranceDB():
 		DROP TABLE IF EXISTS 'Claims';
 		'''
 		self.cursor.execute(query)
+
+		query = '''
+		DROP TABLE IF EXISTS 'SSN_KEY';
+		'''
+		self.cursor.execute(query)
+
+
 
 		# create Accounts table
 		query = '''create table 'Accounts'(
@@ -170,16 +191,41 @@ class InsuranceDB():
 		self.cursor.execute(query)
 		self.conn.commit()
 
-	def insert_account(self, policyholder):
+		query = '''create table 'SSN_KEY'(
+									Id INTEGER PRIMARY KEY AUTOINCREMENT,
+									AccountNumber INTEGER NOT NULL ,
+									SSN TEXT ,
+									FOREIGN KEY(AccountNumber)
+										REFERENCES Accounts(AccountNumber)
+									)
+									'''
+		self.cursor.execute(query)
+		self.conn.commit()
 
+
+	def insert_account(self, policyholder):
+		'''
+		Inserts into DB account information and SSN information
+		'''
 		inputs = policyholder.properties
 		query = '''insert into Accounts Values (Null,?,?,?,?,?,?)'''
 
 		self.cursor.execute(query, inputs)
 		self.conn.commit()
 
+		inputs = (policyholder.account_number, policyholder.ssn,)
+		query = '''insert into SSN_KEY Values (Null,?,?)'''
+
+		self.cursor.execute(query, inputs)
+		self.conn.commit()
+
+
+
 
 	def insert_claim(self, policyholder):
+		'''
+		Inserts into DB claim
+		'''
 		new_claim_inputs = (policyholder.account_number,) + policyholder.make_claim()
 		query = '''insert into Claims Values (Null,?,?,?,?,?,?)'''
 
@@ -187,68 +233,65 @@ class InsuranceDB():
 		self.conn.commit()
 
 
-	def show_metrics(self):
+	def run_metrics(self):
 		'''
+		Runs queries for the below three metrics and saves to the dictionary class variable 'metrics'
 		- Total covered amount for all claims
 		- Claims per year
 		- Average age of insured
 		'''
+
+		# Total covered $ for all claims
 		query1 = '''select sum(CoveredAmount) from Claims'''
-		metric1 = list(self.cursor.execute(query1,()))[0]
+		self.cursor.execute(query1)
+		row = self.cursor.fetchone()
+		self.metrics["covered_amt"] = round(row[0],2)
+		#print(" total covered amount in dollars: $", self.metrics["covered_amt"])
 
-		self.conn.commit()
-		print(metric1)
 
+		# Claims per year
 		query2 = '''select strftime('%Y', LossDate) as LossYear , count(*) from Claims 
-						group by LossYear order by year desc'''
+						group by LossYear order by LossYear desc'''
 
 
-		metric2 = self.cursor.execute(query2, ())
+		self.cursor.execute(query2)
+		rows = self.cursor.fetchall()
+		self.metrics["year_summary"]=[]
+		# print('yearly claim count:')
+		for row in rows:
+			# print('{}: {} claims'.format(row[0], row[1]))
+			self.metrics["year_summary"].append(row)
 
-		self.conn.commit()
-		print('the number of claims for each year:')
-		for row in result_cn:
-			print('Year %s: %s vehicle(s)'%row)
 
-	def get_VINs(self,):
-		query = '''select VIN from Motors'''
+		# Average age of insured
+		query3 = '''select cast(strftime('%Y.%m%d', '{}') - strftime('%Y.%m%d', DOB) as int) from Accounts'''.format(VALUATION_DATE)
+		self.cursor.execute(query3)
+		row = self.cursor.fetchone()
+		self.metrics["average_age"] = row[0]
 
-		result_cn = self.cursor.execute(query, ())
-
-		self.conn.commit()
-
-		print('VIN numbers:')
-		for row in result_cn:
-			print(row[0])
+		# print("Average age of policyholders:", row[0])
 
 if __name__ == "__main__":
 
-	# randomly create data entries
-	acct1 = Policyholder()
-	acct1.make_claim()
-	print(acct1)
-
-
-	#create database
 	testdb = InsuranceDB(DB_NAME)
 	testdb.make_tables()
-	testdb.insert_account(acct1)
-	testdb.insert_claim(acct1)
-	testdb.insert_claim(acct1)
-	testdb.insert_claim(acct1)
-	testdb.insert_claim(acct1)
+	'''
+	# randomly create data entries
+	for x in range(random.randint(1,10)):
+		acct1 = Policyholder()
+		# acct1.make_claim()
+		print(acct1)
 
 
+		testdb.insert_account(acct1)
 
+		for y in range(random.randint(1,10)):
+			testdb.insert_claim(acct1)
 
+	testdb.run_metrics()
+	'''
+	query = '''SELECT name FROM sqlite_master 
+	WHERE type ='table' AND name NOT LIKE 'sqlite_%';'''
 
-'''
-	#standard output as requested.
-	testdb.get_summary()
-	#print out list of VIN numbers for the search in the interactive mode.
-	testdb.get_VINs()
-	#get requested VIN
-	input_VIN = input('Please Type in VIN number to search a vehicle:')
-	#output VIN related car information
-	testcar.get_motors_data(input_VIN).
-'''
+	for x in testdb.return_query(query):
+		print(x, "\n")
