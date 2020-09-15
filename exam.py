@@ -1,13 +1,15 @@
 import sqlite3
-import random, string, datetime
+import random, string, datetime, time
+from tabulate import tabulate
 
 
 
 # initial set up
 DB_NAME = 'INSURANCE_DATABASE'
 
-ACCT_LIST = []
-SSN_LIST = []
+ACCT_LIST = [] #account number list
+POLICYHOLDER_DICT = {} #policy object dictionary
+SSN_LIST = [] #SSN list
 
 # date of valuation in yyyy-mm-dd; Only losses recorded previous to this date will show
 VALUATION_DATE = "2020-09-13"
@@ -38,6 +40,7 @@ def make_date(start, end):
 	# print(random_date)
 
 	return random_date
+
 
 '''
 Policy Data class
@@ -226,11 +229,14 @@ class InsuranceDB():
 		'''
 		Inserts into DB claim
 		'''
-		new_claim_inputs = (policyholder.account_number,) + policyholder.make_claim()
+		new_claim = policyholder.make_claim()
+		new_claim_inputs = (policyholder.account_number,) + new_claim
 		query = '''insert into Claims Values (Null,?,?,?,?,?,?)'''
 
 		self.cursor.execute(query, new_claim_inputs)
 		self.conn.commit()
+
+		return(new_claim)
 
 
 	def run_metrics(self):
@@ -245,8 +251,8 @@ class InsuranceDB():
 		query1 = '''select sum(CoveredAmount) from Claims'''
 		self.cursor.execute(query1)
 		row = self.cursor.fetchone()
-		self.metrics["covered_amt"] = round(row[0],2)
-		#print(" total covered amount in dollars: $", self.metrics["covered_amt"])
+		self.metrics["Covered Amount ($)"] = round(row[0],2)
+		#print(" total covered amount in dollars: $", self.metrics["Covered Amount ($)"])
 
 
 		# Claims per year
@@ -256,42 +262,142 @@ class InsuranceDB():
 
 		self.cursor.execute(query2)
 		rows = self.cursor.fetchall()
-		self.metrics["year_summary"]=[]
+		self.metrics["Year Summary"]=[]
 		# print('yearly claim count:')
 		for row in rows:
 			# print('{}: {} claims'.format(row[0], row[1]))
-			self.metrics["year_summary"].append(row)
+			self.metrics["Year Summary"].append(row)
 
 
 		# Average age of insured
 		query3 = '''select cast(strftime('%Y.%m%d', '{}') - strftime('%Y.%m%d', DOB) as int) from Accounts'''.format(VALUATION_DATE)
 		self.cursor.execute(query3)
 		row = self.cursor.fetchone()
-		self.metrics["average_age"] = row[0]
+		self.metrics["Average Age"] = row[0]
 
 		# print("Average age of policyholders:", row[0])
 
 if __name__ == "__main__":
 
-	testdb = InsuranceDB(DB_NAME)
-	testdb.make_tables()
-	'''
+
+	db = InsuranceDB(DB_NAME)
+	db.make_tables()
+
 	# randomly create data entries
+	time.sleep(0.5)
+	print("making random faux-insurance policyholder profiles and claims...")
+	time.sleep(1)
+	
+	# random # of acct
 	for x in range(random.randint(1,10)):
 		acct1 = Policyholder()
+		POLICYHOLDER_DICT[acct1.account_number]=acct1
 		# acct1.make_claim()
 		print(acct1)
 
+		db.insert_account(acct1)
 
-		testdb.insert_account(acct1)
-
+		# random # of claims for each acct
 		for y in range(random.randint(1,10)):
-			testdb.insert_claim(acct1)
+			db.insert_claim(acct1)
+		time.sleep(0.25)
 
-	testdb.run_metrics()
-	'''
-	query = '''SELECT name FROM sqlite_master 
-	WHERE type ='table' AND name NOT LIKE 'sqlite_%';'''
 
-	for x in testdb.return_query(query):
-		print(x, "\n")
+	flag = False #initialize loop
+	while not flag:
+		print("Enter your command option. \n \
+	[1] Make a new Policyholder \n \
+	[2] Make a new claim for a Policyholder \n \
+	[3] List all Policyholders \n \
+	[4] List all claims for a Policyholder \n \
+	[5] View Aggregate Metrics Report \n \
+	--Enter anything else to quit program-- \n")
+		try:
+			option = int(input())
+		except:
+			print("Thank you for your business.")
+			time.sleep(0.5)
+			flag = True 
+			break;
+
+		if option == 1:
+			print("Adding a new policyholder..")
+			time.sleep(0.25)
+			new_acct = Policyholder()
+			POLICYHOLDER_DICT[new_acct.account_number] = new_acct
+
+			print("Account {} is created. Press 0 to view account information".format(new_acct.account_number))
+			acct_opt = input()
+			if acct_opt == "0":
+				print(new_acct)
+
+		elif option == 2:
+			print("Enter the Account Number to add claim to")
+			try:
+				acct_num = input()
+				new_clm = db.insert_claim(POLICYHOLDER_DICT[acct_num])
+
+				print("New claim has been added.")
+				print('''
+Claim Number: %s
+Loss Date: %s
+Loss Type: %s
+Billed Amount: %s
+Covered Amount: %s
+''' % new_clm)
+
+			except:
+				print("Invalid Account Number. Returning to main menu...")
+				break;
+
+		elif option == 3:
+			print("Listing all Accounts..")
+			print(POLICYHOLDER_DICT)
+			for k,v in POLICYHOLDER_DICT.items():
+				print(v)
+				time.sleep(0.25)
+
+		elif option == 4:
+			print("Choose an account to view claims")
+			try:
+				acct_num = input()
+				query = ''' SELECT * from Claims where AccountNumber = {}'''.format(acct_num)
+				results = db.return_query(query)
+				headers = ["AccountNumber", "ClaimNumber", "LossDate", "LossType", \
+				"BilledAmount($)", "CoveredAmount($)"]
+
+				print("\n", tabulate(results[1:], headers=headers, floatfmt=".2f", showindex=False, tablefmt="simple")) 
+			except:
+				time.sleep(10)
+				print("returning to main menu..")
+				break;
+
+		elif option == 5:
+			print("Presenting requested metrics..")
+			db.run_metrics()
+
+			for k, v in db.metrics.items():
+				if k == "Year Summary":
+					print("{}:".format(k))
+					for item in v:
+						print("%s : %s" % item)
+				else: 
+					print("{}: {}".format(k, v))
+
+			print("returning to main menu..")
+
+		else:
+			print ("Thank you for your business.")
+			flag = True
+			break;
+
+
+
+
+
+
+
+
+
+
+
